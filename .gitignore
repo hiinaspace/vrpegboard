@@ -1,0 +1,16 @@
+# Vendor CAD (downloaded by fetch_models.py; license terms vary — do not commit)
+/vendor/
+
+# Build outputs
+/out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# OS
+.DS_Store

@@ -1,0 +1,20 @@
+# Ruff (format + lint) and ty (typecheck) via uv. Install with `uv run pre-commit install`.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: ruff-lint
+        name: ruff lint
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ty
+        name: ty typecheck
+        entry: uv run ty check
+        language: system
+        pass_filenames: false
+        types: [python]
