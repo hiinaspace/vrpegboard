@@ -20,38 +20,44 @@ Built with [build123d](https://github.com/gumyr/build123d) (Python code-CAD).
 uv sync --extra view --extra analyze  # build123d + OpenCascade; viewer; mesh/print analysis
 uv run python fetch_models.py         # download vendor STEP CAD into vendor/
 uv run vrpegboard                     # export STLs into out/ (+ overhang summary per part)
-uv run pytest                         # manifold / bed-fit / peg-pitch checks
-uv run python -m vrpegboard.fitcheck index        # geometric drop-in / cable press-in check
+uv run pytest                         # solid-validity / bed-fit / peg-pitch checks
+uv run python -m vrpegboard.fitcheck index   # drop-in / cable slot / socket-wall checks
+uv run python -m vrpegboard.fitcheck tundra
 uv run python -m vrpegboard.printability out/*.stl # overhang + (if installed) PrusaSlicer stats
 ```
 
-The Index controller booleans run in **mesh space (`manifold3d`)**, not OpenCascade — the
-vendor controller is a genus-3, ~390k-triangle organic STEP that OCC can't boolean in
-reasonable time (a swept-volume subtraction times out past minutes; manifold3d does it in
-milliseconds). So `index_dock_*` come back as a watertight `trimesh`; everything else stays
-build123d. `mesh.py` holds the manifold pipeline.
+The cups are **surface-conforming**: `conform.py` ray-casts the posed device mesh
+straight up the hang axis into a depth raster (the body's lower envelope), then
+builds the cup under it. A heightfield is single-valued in z, so the device still
+drops straight in with no undercut, but the inner surface now *matches* the
+device's bottom instead of a flat-floored prism. Each dock fuses in mesh space
+(`manifold3d`) — the raster is low-poly so its booleans are cheap and robust,
+unlike a B-rep boolean against the ~390k-triangle vendor mesh. Two cup methods are
+selectable to compare in the viewer: `solid` (a conforming block) and `shell` (a
+thin conforming skin).
 
-The **fit-check coupon** (`out/coupon.stl`) needs no vendor CAD — print it first
-to validate board fit, the connector press-fit, and magnetic capture before
-committing filament to full cradles.
+Print **`out/index_cup_test.stl` first** (the Index cup alone, no bracket/pegs):
+drop the real controller + cable in on the desk to validate the seat / magnet
+mate and judge stability before committing to the full docks.
 
 ### Seeing it against the wall
 
-Two ways to eyeball the lean/standoff before printing:
+Two ways to eyeball the pose/standoff before printing:
 
 - **Live 3D (recommended for tuning).** `ocp_vscode` (the `view` extra) ships a
   standalone **browser** viewer — no VS Code needed:
 
   ```sh
   uv run python -m ocp_vscode      # once: opens the viewer at localhost:3939
-  uv run python scene.py index     # push Index dock + controller + pegboard panel
-  uv run python scene.py tundra     # ...or the Tundra
+  uv run python scene.py index solid   # Index dock (solid cup) + controller + board
+  uv run python scene.py index shell   # ...the thin-shell cup, to compare
+  uv run python scene.py tundra solid  # ...or the Tundra
   ```
 
-  Tweak a knob (`MOUNT_ANGLE`/`STANDOFF`, or `Tundra.mount_angle`/`standoff`) and
-  re-run `scene.py`; the viewer updates in place so you can rotate the assembly
-  against the grey board panel and judge "will this look right against my wall".
-  dock = blue, device = orange, board = grey.
+  Tweak a knob (`AZIMUTH`/`STANDOFF`/`CUP_METHOD` in `index_controller.py`, or the
+  Tundra `CUP_METHOD`/`CRADLE_*`) and re-run `scene.py`; the viewer updates in place
+  so you can rotate the assembly against the grey board panel and judge "will this
+  look right against my wall". dock = blue, device = orange, pegs = green, board = grey.
 
 - **Headless PNGs.** `uv run python preview.py` renders three orthographic
   scatter views (`out/preview_*.png`) with the same colour key — handy in a
@@ -59,37 +65,35 @@ Two ways to eyeball the lean/standoff before printing:
 
 ## How the docks are generated
 
-The magnetic cable is strong enough to carry these devices on its own (tested),
-so the docks lean on it and stay minimal — they're built from the vendor STEP
-geometry, not hand-modelled:
+The magnetic cable carries the device's weight; the dock's job is to **hold the
+charging port facing straight down** so the connector loads in compression (no
+peeling moment to pop the magnet) and to register the device against swinging.
+Both docks are built from the vendor STEP geometry, not hand-modelled:
 
-1. import the STEP and **auto-pose** it port-down (find the button "head" vs the
-   handle "pommel/port", derive the handle axis, rotate vertical, spin the ring
-   forward so it clears the board);
-2. **angle the connector outward** so the device — hanging on the magnet — clears
-   the board face instead of pressing into it. The tilt is *solved*: we tip the
-   posed point cloud about the port until nothing is closer to the board than the
-   clearance (`mount_angle = None` auto-solves; set a number to override);
-3. for the **Index**, build a **holder block with the controller subtracted out of
-   it** so the base nests into a pocket matching its own underside, drops in from the
-   top, and rests on full contact — no upper ring. Crucially the subtracted shape is
-   the controller **swept along its insertion axis** (a translational sweep), not the
-   raw solid: the sweep backfills the controller's open concavities (the USB-C recess,
-   the strap groove) so no block material floats inside the pocket, and opens the cavity
-   straight along the axis so the controller drops in. The block is **axis-aligned to the
-   board and reaches back to the board face**, hugs the handle (the ring sweeps out of
-   it), and **drills out the modelled USB-C jack**. The **port frame** (where the cable
-   clamp + jack sit) is **not guessed** — it's marked on the port face in FreeCAD and read
-   in (see *Marking the port*), because the real port is off-centre and tilts ~20° off the
-   handle axis. The **Tundra** gets **no cradle at all**, just the angled cable clamp;
-4. hold the cable in a **c-channel clamp** (a short split tube) at the port. On the
-   Tundra it rides a short horizontal **arm** off the peg-back — an "L", so nothing
-   pushes back through the plate — and stands ~5 mm off the board, leaving room for
-   the dome. Everything fuses into one printable solid.
+1. import the STEP and **auto-pose** it so the charging port faces straight down
+   (board −Z). The Index then spins about that vertical hang axis (`AZIMUTH`
+   ≈90°) so the **trigger faces the board** and the wide tracking ring lies along
+   X (to the side); the Tundra hangs from its marked port and rolls the dome to
+   the most compact orientation that clears the board;
+2. **stand the connector off the board** far enough that the whole hanging
+   device clears it — solved automatically (Index ~62 mm, since trigger-to-board
+   still sweeps the ring boardward; Tundra ~20 mm). The Index rides a thin two-web
+   bracket out to a 2×2 peg grid; the Tundra a short neck + backplate;
+3. **conform to the device's bottom**: `conform.py` ray-casts the posed device's
+   bottom ~20 mm looking up the hang axis into a depth raster and builds a cup
+   whose inner surface matches it — the grip (Index) / dome (Tundra) rests on a
+   matching surface. A heightfield is single-valued in z, so it still drops
+   straight in. Both **port frames** are marked in FreeCAD, not guessed (see
+   *Marking the port*);
+4. sink the cable's **magnetic discs + barrel lead-in** into a stepped
+   `connector_socket` in the cup floor (see *Charging cable retention*), a
+   full-height side slot letting the cable press in and the barrel + cable hanging
+   free below. Everything fuses in mesh space into one printable piece per dock,
+   plus the separate glued pegs.
 
-The Index dock is assembled in mesh space and comes out a **watertight, single-body**
-mesh (asserted in the tests). The Tundra dock and base parts are build123d solids; the
-simple base parts are asserted OCC-valid.
+All docks are single watertight meshes (one connected body, exported STL —
+asserted in the tests); the conforming surface comes from a ray-cast raster, and
+booleans run on that low-poly raster, never on the raw vendor mesh.
 
 ## Marking the port
 
@@ -107,14 +111,24 @@ handle-bottom centroid (the old approach) put the cable clamp ~9 mm off. Instead
    the canonical pose, and prints `PORT_XY` / `PORT_Z` / `PORT_AXIS` to paste into
    `index_controller.py`.
 
+The **Tundra** port is marked the same way (its USB-C recess sits on the dome's side
+wall, so the seed-window centroid lands slightly off). Draw the outline + a centre
+point on the port face in FreeCAD, export `vendor/tundratracker-chargingportsketch`
+to both `.step` and `.3mf`, then `uv run python -m vrpegboard.portmark tundra` prints
+`PORT_C` / `PORT_AXIS_N` (the port centre + outward normal in the raw STEP frame) to
+paste into `tundra_tracker.py`. `_posed` then hangs the tracker on that exact axis.
+
 ## Checking fit before printing
 
-`uv run python -m vrpegboard.fitcheck index` does two **geometric** (not physics) checks in
-mesh space: it slides the real-size controller down its insertion axis and reports the
-interference vs depth (a clear path = no undercut; snug seated contact is fine), the seated
-clearance to the board, and whether the cable clamp's entry slot vents to air so the cable
-can press in sideways. `printability.py` reports overhang area / a low-overhang orientation
-and, if PrusaSlicer (flatpak) is installed, real slice time / filament / support stats.
+`uv run python -m vrpegboard.fitcheck index|tundra` runs **geometric** (not
+physics) checks in mesh space: it slides the real-size device up its hang axis and
+reports interference vs height (a clear path = no undercut; snug seated contact is
+fine), plus seated board clearance; it drops the **real magnetic connector** onto
+the seat and checks it fits the bores with ~0 interference (the test the first
+socket failed); it confirms the cable slot vents to air; and it probes rings of
+points around the socket bores and each peg pocket to confirm full walls.
+`printability.py` reports overhang area / a low-overhang orientation and, if
+PrusaSlicer (flatpak) is installed, real slice time / filament / support stats.
 
 ## How the pegboard hook works
 
@@ -123,70 +137,99 @@ through the hole, then a filleted bend climbing up-and-back behind the board. To
 mount, angle the whole part up so the hook lines up with the hole, slide it
 through, then lower it to vertical — the hook swings behind the board and
 **gravity locks** it (it can't pull out without lifting + tilting again). A lower
-straight peg one pitch down stops rotation. The pegs are a loose slide fit on
-purpose; the hook does the holding, not a tight peg. Because the bend is a single
-smooth curve at ~45° (no flat overhang), the part prints tilted in the slicer
+straight peg one pitch down stops rotation: it's **longer** than the board
+(~+5 mm, so part flex can't walk it out of its hole) and **snugger** than the
+hook (the hook stays a loose slide fit — it does the holding, not a tight peg;
+the lower peg's closer fit is what kills left/right twist). Because the bend is a
+single smooth curve at ~45° (no flat overhang), the hook prints lying on its side
 without support material. Tune the bend with `Pegboard.hook_bend_radius`.
+
+**The pegs are separate, glued parts.** The connector socket outgrew the old
+"whole part ≤7 mm thick, printed on its side" trick, so each dock body prints in
+the orientation its cup/cradle wants while the pegs print side-lying. Each peg has
+a stub that glues into a blind hole through the dock's back; the hook's stub and
+hole are **D-profiled** so it can only go in with its tang pointing up. The Tundra
+uses one column (a hook + a lower peg); the **Index uses a 2×2 grid** (two hooks,
+two lower pegs, a pitch apart) so its long ~83 mm cantilever can't twist —
+`peg_holes(cols)` and `placed_pegs(cols)` take the column offsets.
 
 ## Charging cable retention
 
-The cable is held by a **c-channel clamp** — a short split tube (like a flagpole
-bracket) gripping the **thin 3 mm cable just below the rigid ~10 mm swivel body**,
-not the 8 mm body itself. Gripping the cable keeps the clamp under ~7 mm across, so
-it (and the whole Tundra dock) **prints on its side without supports**. The rigid
-body rests its shoulder on the clamp's top rim and floats up to the port; the
-magnet does the final centring, so the clamp only has to aim the cable and stop it
-dropping out. You can't thread the cable through a closed bore, so it **snaps in
-sideways** through a full-length slot (a touch under the cable, gripping past the
-lips); the slot also vents the bore so it's never **blind**. `slot_dir` defaults
-along **+X**, so laid on its side the slot points up off the bed.
+The charging interface is **two magnetic discs** — a USB-C adapter that stays in
+the device's port + the cable's magnetic head — that stack to Ø8 × 7.5 mm and sit
+**below the device's port face**, with a rigid swivel barrel (Ø6.6, ~20 mm) and
+then the flexible 3 mm cable trailing off them. The first socket was far too
+shallow (~Ø7.5 × 10 mm) for that stack, so the magnet end physically wouldn't
+seat. The `connector_socket` now matches the measured stack:
+
+- a **Ø8.4 mm bore, 10 mm deep** below the cup/cradle floor — deeper than the
+  7.5 mm stack on purpose (the extra ~2.5 mm is recess/lift travel, see below);
+- a **Ø7.0 mm bore, 3 mm deep** gripping the start of the barrel; the step
+  between the two stops the disc;
+- **open below** — the rest of the barrel + cable hang free (no point
+  encapsulating them).
+
+The bore runs **deeper than the mated stack** so the cable head can rest
+**recessed** ~5 mm below the seat when the device is off. The device's magnetic
+adapter protrudes ~4.5 mm below its port face, so when the body seats in the cup
+the magnet **lifts the cable up to couple** while the cup still carries the
+weight — instead of the body balancing on top of the cable held by the barrel
+grip (the earlier 7.5 mm bore left no recess, so the whole device perched on the
+cable). The `scene.py` overlay models the device adapter (silver) + mated cable
+(black) so you can eyeball this in the OCP viewer.
+
+Assembly is **top-loading**: drop the magnet head + barrel into the bores from
+above (before the device goes in), the barrel hanging out the open bottom; a
+cable-width **side slot** lets the flexible cable route out. The device then
+seats on the cup floor with its port face over the bore, the magnet pulling it
+down — the swivel can no longer pivot it over.
 
 ## Status
 
-- ✅ Coupon, peg-back (swept hook), c-channel cable clamp, **Index controller dock
-  (L + R)**, **Tundra tracker dock** (×3, identical).
-- The **Tundra** dock is magnet-only: peg-back + an outward-angled cable clamp on a
-  short arm (an "L"), no framing. It's **≤7 mm thick so it prints on its side
-  without supports**; the tracker hangs on the magnet, dome toward the board (with
-  ~5 mm clearance to the clamp), strap plate and straps free. (~7 × 29 × 43 mm.)
-- The **Index** dock is a **holder block with the controller (swept along its insertion
-  axis) subtracted** — it nests into a pocket matching its underside and drops in from the
-  top, no upper ring (magnet + gravity hold it, the pocket registers it). The port frame is
-  marked in FreeCAD (off-centre, tilted ~20°), the jack is drilled through, and the cable
-  clamp sits on the port axis. Assembled as a watertight mesh via manifold3d.
-  (~35 × 68 × 47 mm.) `fitcheck index` confirms it drops in, clears the board, and the
-  cable presses in.
-- The outward tilt is **auto-solved** to just clear the board (with the real tilted port
-  the Index now wants ~37° at `STANDOFF=15`; raise `STANDOFF` to trade lean for standoff —
-  Tundra ~17°); `min_clear_angle()` in each device module reports the value, and
-  `mount_angle`/`MOUNT_ANGLE` overrides it.
+- ✅ Split peg parts (swept hook + lower peg, glued), the magnet-stack connector
+  socket, **Index controller dock (L + R)** + `index_cup_test`, **Tundra tracker
+  dock** (×3, identical). Both hang the device **port straight down**.
+- The **Tundra** dock: a **surface-conforming cup** of the dome's lower band over
+  the socket, hung on the FreeCAD-marked port and rolled compact, stood off ~20 mm
+  on a short neck + backplate so the dome clears the board. Prints upright on its
+  flat base. (~40 × 41 × 39 mm.)
+- The **Index** dock: a **surface-conforming cup** of the controller's bottom
+  ~20 mm (grip wrapped, tracking ring left to a clearance channel) over the socket,
+  carried ~62 mm off the board on a **two-web bracket** to a **2×2 peg grid** (the
+  long cantilever can't twist; the cable hangs down the centre between the webs).
+  **Trigger faces the board, ring to the side** (`AZIMUTH` ≈90°). (~49 × 80 × 39 mm.)
+- Each dock builds with `CUP_METHOD = "solid"` or `"shell"`; `scene.py <dev> <method>`
+  pushes either to the viewer to compare.
+- `pytest` asserts the construction invariants (one watertight piece with the arms
+  fused, drop-in with no undercut, board clearance, full-height slot venting, the
+  magnet hole breaching the floor, the cable fitting the bores). `fitcheck
+  index|tundra` prints the same as advisory diagnostics. **Print `index_cup_test`
+  first** (the cup alone) to validate the seat / mate height before the full docks.
 
 ## Tuning
 
 All dimensions live in `src/vrpegboard/params.py`. After a test print, adjust
 there:
 
-- `Pegboard.peg_clearance` (slide fit), `hook_angle` (climb angle / printability),
-  `hook_bend_radius` (how tight the swept bend is), `catch_rise` / `catch_clearance`
-  (the hook behind the board), `board_thickness`.
-- `Connector.cable_od` / `cable_clearance` (cable bore grip), `cable_slot_width`
-  (how hard the cable snaps in sideways), `clamp_wall` / `clamp_len` (clamp size —
-  keep `cable_hole_dia + 2*clamp_wall` under the plate width so it prints on its
-  side), `male_body_len` (sets the head height above the clamp).
-- `Tundra.mount_angle` (`None` = auto-solve), `board_clearance`, `standoff` (tuned
-  so the clamp stands ~5 mm off the board for the dome).
+- `Pegboard.peg_clearance` (hook slide fit), `lower_peg_clearance` /
+  `lower_peg_extra` (anti-twist peg fit/length), `peg_glue_clearance` /
+  `peg_key_flat` (the glued stubs), `hook_angle`, `hook_bend_radius`,
+  `catch_rise` / `catch_clearance` (the hook behind the board), `board_thickness`.
+- `Connector.magnet_dia` / `magnet_depth` (the disc stack), `shroud_dia` /
+  `shroud_bore_depth` (the barrel lead-in), `magnet_clearance` /
+  `shroud_clearance` (slip fits), `cable_slot_width`, `socket_wall`.
 
 Per-device pose/fit knobs live atop the device modules:
 
-- `index_controller.py` — `CUP_DEPTH` (how deep the pocket wraps the base — keep it
-  in the straight handle region so the controller drops straight in), `CUP_CLEARANCE`,
-  `CUP_WALL`, `JACK_DRILL_DIA`, and the mount geometry `MOUNT_ANGLE` (`None` =
-  auto-solve), `SSTANDOFF` (trades against lean), `BOARD_CLEARANCE`.
-- `tundra_tracker.py` — `ATTACH_Z` and the port-seed window; tilt via `Tundra`.
-
-The pegboard plate/peg width (`Backplate.width`, `Pegboard.hole_dia`) is the max
-feature that prints on its side support-free, so the cable clamp is sized to fit
-under it — that's the whole reason it grips the thin cable rather than the body.
+- `index_controller.py` — `CUP_METHOD` (`"solid"`/`"shell"`), `CUP_DEPTH` (how much
+  of the bottom the cup wraps), `CUP_CLEARANCE`, `CUP_WALL`, `CUP_MAX_R` (how far the
+  cup reaches before it leaves the ring to a clearance channel); `AZIMUTH` (spin about
+  the hang axis — ≈90° = trigger to board / ring to the side), `STANDOFF` (`None` =
+  auto-solve board clearance), `BOARD_CLEARANCE`; `WEB_THICK` / `WEB_OFF` (bracket webs).
+- `tundra_tracker.py` — `CUP_METHOD`, `CRADLE_H` (band height), `CRADLE_WALL` /
+  `CRADLE_CLEAR` (shell thickness / drop-in gap), `CUP_MAX_R`, `BOARD_CLEAR`,
+  `ATTACH_Z`; `PORT_C` / `PORT_AXIS_N` (the FreeCAD-marked port) with the seed window
+  as fallback.
 
 ## Attribution / licenses
 
@@ -207,8 +250,8 @@ to see how they hSold the device, then translate into the band knobs above:
 **Tundra trackers** (cradle very little; the straps/USB/magnet bear the weight):
 
 - [Tundra Tracker Wall Charger — DevoCut (Printables)](https://www.printables.com/model/185755-tundra-tracker-wall-charger)
-  — the plastic is "just a guide to find the USB port", charges with straps on;
-  basically what our magnet-only Tundra dock does (this one is nice and thin).
+  — shallow cups that are "just a guide to find the USB port", charges with
+  straps on; the model for our Tundra cup (ours adds the swivel-capture socket).
 - [Magnetic Charging Dock, Seven Bay, EOZ cables — Tsumitsuki (Thingiverse)](https://www.thingiverse.com/thing:5426361)
   — multi-bay, fits the official EOZ magnetic cable (same family as ours).
 - [Magnetic Charging Dock, Seven Bay, NetDot Gen10 — Tsumitsuki (Thingiverse)](https://www.thingiverse.com/thing:5426357)

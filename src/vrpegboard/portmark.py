@@ -36,7 +36,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from build123d import Location, Vector, import_step  # noqa: E402
 
-from .index_controller import _canonical, _canonical_tf, _port_xy  # noqa: E402
 from .mesh import part_to_trimesh  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[2] / "out"
@@ -51,6 +50,8 @@ PX = 1000  # image is PX×PX, square, so 1 px is constant mm in both directions 
 @lru_cache(maxsize=1)
 def _mesh():
     """The canonical controller as a (welded) trimesh, for solid depth rasters."""
+    from .index_controller import _canonical
+
     return part_to_trimesh(_canonical(), tol=0.08)
 
 
@@ -121,8 +122,10 @@ def render_markup_views(
     m = _mesh()
     V = np.asarray(m.vertices)
     F = np.asarray(m.faces)
+    from .index_controller import _port_pt
+
     cen = V[F].mean(axis=1)  # triangle centroids, for masking to the handle
-    gx, gy = _port_xy()  # current guess, shown as a marker to correct
+    gx, gy, _gz = _port_pt()  # current guess, shown as a marker to correct
     views: dict[str, dict] = {}
 
     # Bottom view: solid depth render of the handle underside, looking up the −Z axis.
@@ -199,16 +202,20 @@ def _read_3mf_transform(path_3mf: str) -> np.ndarray:
 def _rect_center_local(step_path: str) -> tuple[np.ndarray, int]:
     """Centre of the marked rectangle in the sketch's local plane.
 
-    The export carries the rectangle plus reference geometry and the sketch's X/Y axis
-    lines (which run out to ±10⁴). We keep only straight-line-edge vertices near the
-    cluster median, dropping those axis/construction outliers, and average them — the
-    rectangle (incl. its bevel segments) is symmetric about the port centre.
+    The export carries the marked outline plus reference geometry and the sketch's X/Y
+    axis lines (which run out to ±10⁴). We keep edge vertices near the cluster median,
+    dropping those axis/construction outliers, and average them — the outline (a
+    straight-edged rectangle for the Index, a rounded USB-C spline for the Tundra) is
+    symmetric about the port centre. ``"BSPLINE".endswith("LINE")`` so both match; if
+    nothing does, fall back to all vertices.
     """
     s = import_step(step_path)
     pts = []
     for e in s.edges():
         if str(e.geom_type).endswith("LINE"):
-            pts += [e.start_point().to_tuple(), e.end_point().to_tuple()]
+            pts += [tuple(e.start_point()), tuple(e.end_point())]
+    if not pts:
+        pts = [tuple(v) for v in s.vertices()]
     pts = np.array(pts)
     med = np.median(pts, axis=0)
     keep = np.linalg.norm(pts[:, :2] - med[:2], axis=1) < 50.0  # drop the far axis lines
@@ -216,45 +223,64 @@ def _rect_center_local(step_path: str) -> tuple[np.ndarray, int]:
     return rect.mean(axis=0), len(rect)
 
 
-def port_frame_from_marked_step(step_path: str, placement_3mf: str | None = None) -> dict:
-    """FreeCAD-marked port rectangle (STEP + .3mf) → port frame in **canonical** coords.
+def port_frame_from_marked_step(
+    step_path: str,
+    placement_3mf: str | None = None,
+    to_frame: Location | None = None,
+    kind: str = "index",
+) -> dict:
+    """FreeCAD-marked port rectangle (STEP + .3mf) → port frame, mapped to a target frame.
 
     The STEP gives the rectangle in the sketch's local plane; the .3mf's build transform
-    places that plane in the controller's native frame (centre → port position, the
-    transform's Z-basis → port normal). Both are then mapped through ``_canonical_tf`` into
-    ``index_controller``'s pose, and the normal is flipped **outward** (the way the port
-    faces, canonical -Z-ish). Returns ``{xy, z, axis}`` and prints the lines to paste in.
+    places that plane in the device's native frame (centre → port position, the
+    transform's Z-basis → port normal). Both are mapped through ``to_frame`` and the
+    normal flipped **outward** (the way the port faces). ``kind`` picks the target frame
+    and the printed paste block:
+
+    * ``"index"`` — ``to_frame`` defaults to ``index_controller._canonical_tf()``; prints
+      ``PORT_XY`` / ``PORT_Z`` / ``PORT_AXIS``.
+    * ``"tundra"`` — ``to_frame`` defaults to identity (raw STEP coords); prints
+      ``PORT_C`` / ``PORT_AXIS_N`` to paste into ``tundra_tracker.py``.
     """
     if placement_3mf is None:
         placement_3mf = str(Path(step_path).with_suffix(".3mf"))
     m = _read_3mf_transform(placement_3mf)
     basis, trans = m[:3], m[3]
     local_c, n_rect = _rect_center_local(step_path)
-    native_c = local_c @ basis + trans  # local → controller-native
+    native_c = local_c @ basis + trans  # local → device-native
     native_n = basis[2] / np.linalg.norm(basis[2])  # local +Z basis = sketch-plane normal
 
-    t = _canonical_tf()
+    if to_frame is None:
+        if kind == "index":
+            from .index_controller import _canonical_tf
+
+            to_frame = _canonical_tf()
+        else:
+            to_frame = Location()
 
     def _map(p):
-        q = (t * Location(Vector(float(p[0]), float(p[1]), float(p[2])))).position
+        q = (to_frame * Location(Vector(float(p[0]), float(p[1]), float(p[2])))).position
         return np.array([q.X, q.Y, q.Z])
 
     cc = _map(native_c)
     cn = _map(native_c + native_n) - cc
     cn /= np.linalg.norm(cn)
-    if cn[2] > 0:  # outward port normal faces away from the handle body (down, canonical -Z)
+    if cn[2] > 0:  # outward port normal faces down (board -Z-ish) once posed
         cn = -cn
 
-    frame = {
-        "xy": (float(cc[0]), float(cc[1])),
-        "z": float(cc[2]),
-        "axis": tuple(round(float(v), 4) for v in cn),
-    }
-    xy = tuple(round(v, 2) for v in frame["xy"])
+    axis = tuple(round(float(v), 4) for v in cn)
     native = tuple(round(v, 1) for v in native_c)
     print(f"marked rect: {n_rect} cluster verts; native centre {native}")
-    print(f"canonical port: xy={xy} z={frame['z']:.2f} axis={frame['axis']}")
-    print_port_block(cc[0], cc[1], cc[2], frame["axis"])
+    if kind == "tundra":
+        frame = {"center": (float(cc[0]), float(cc[1]), float(cc[2])), "axis": axis}
+        print("\n# paste into tundra_tracker.py:")
+        print(f"PORT_C = ({cc[0]:.2f}, {cc[1]:.2f}, {cc[2]:.2f})")
+        print(f"PORT_AXIS_N = {axis}")
+        return frame
+    frame = {"xy": (float(cc[0]), float(cc[1])), "z": float(cc[2]), "axis": axis}
+    xy = tuple(round(v, 2) for v in frame["xy"])
+    print(f"canonical port: xy={xy} z={frame['z']:.2f} axis={axis}")
+    print_port_block(cc[0], cc[1], cc[2], axis)
     return frame
 
 
@@ -268,10 +294,31 @@ def print_port_block(
     print(f"PORT_AXIS = {axis if axis else None}")
 
 
+def _tundra_main() -> None:
+    """Read a FreeCAD-marked Tundra port (STEP + .3mf) → PORT_C / PORT_AXIS_N block."""
+    step = Path(__file__).resolve().parents[2] / "vendor" / "tundratracker-chargingportsketch.step"
+    mf = step.with_suffix(".3mf")
+    if not step.exists():
+        raise SystemExit(f"missing {step}")
+    if not mf.exists():
+        raise SystemExit(
+            f"missing {mf.name} — FreeCAD's STEP export flattens the sketch to its local\n"
+            "plane and loses where it sits on the dome. Export the SAME sketch selection a\n"
+            "second time as 3MF (File → Export → 3D Manufacturing Format) next to the STEP,\n"
+            "then re-run this. (The .3mf <build> transform carries the placement + normal.)"
+        )
+    port_frame_from_marked_step(str(step), str(mf), kind="tundra")
+
+
 if __name__ == "__main__":
-    v = render_markup_views()
-    print("\nMark the recess bbox in pixels, then e.g.:")
-    print("  from vrpegboard.portmark import render_markup_views, back_project")
-    print("  v = render_markup_views()")
-    print("  back_project(v['bottom_xy'], (left, top, right, bottom))  # -> x,y")
-    print("  back_project(v['side_yz'],  (left, top, right, bottom))  # -> ...,z")
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "tundra":
+        _tundra_main()
+    else:
+        v = render_markup_views()
+        print("\nMark the recess bbox in pixels, then e.g.:")
+        print("  from vrpegboard.portmark import render_markup_views, back_project")
+        print("  v = render_markup_views()")
+        print("  back_project(v['bottom_xy'], (left, top, right, bottom))  # -> x,y")
+        print("  back_project(v['side_yz'],  (left, top, right, bottom))  # -> ...,z")

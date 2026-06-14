@@ -1,112 +1,166 @@
 """Deterministic "does it assemble?" checks — geometry, not physics.
 
-Both checks run in mesh space with ``manifold3d`` (intersections are sub-millisecond), so
-they're exact and agent-readable, with no rigid-body solver to tune. Two questions:
+Both docks now hang the device **port straight down**, so the insertion axis is
+board +Z (the device lifts straight up off its cup/cradle). Per device:
 
-* **Controller drop-in** — step the real-size controller down its insertion axis into the
-  dock and report the overlap (interference) volume vs depth. The pocket is the controller
-  swept along that axis (see ``mesh.swept`` / ``index_controller._holder``), so a correct
-  pocket shows ~0 interference all the way to seated; a non-zero plateau flags an undercut.
-  We also report the seated controller's clearance to the board face (Y=0).
-* **Cable side press-in** — march the seated cable assembly's port point outward along the
-  clamp's entry-slot direction and test containment in the dock, to confirm the slot
-  actually breaches to open air (else there's no way to snap the cable in).
+* **Drop-in** — slide the real-size device up its axis and report interference vs
+  height. The cup/cradle is a cumulative silhouette (Index) / fitted V (Tundra),
+  so a correct build shows ~0 interference all the way down; a plateau flags an
+  undercut. Snug seated contact is fine — judge the path.
+* **Cable fit** — the magnetic connector (two discs + barrel + cable) dropped onto
+  the seat must sit in the bores with ~0 interference (the real "does the magnet
+  end fit" test the first socket failed), and the side slot must vent to air so
+  the cable can route out.
+* **Socket walls** + **peg seats** — ring probes confirming full material around
+  the magnet bore and around each glue pocket.
 
-Run: ``uv run python -m vrpegboard.fitcheck index``.
+Run: ``uv run python -m vrpegboard.fitcheck index|tundra``.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
-from .connector import clamp_outer_dia
-from .cradle import apply_location
-from .index_controller import (
-    _canonical,
-    _holder,
-    _insertion_dir,
-    _place,
-    _port_loc,
-    seated_device,
-)
+from .connector import cable_assembly
+from .cradle import apply_location, ocp_cloud
 from .mesh import manifold_to_trimesh, to_manifold
+from .params import CONNECTOR, PEGBOARD
 
 
-def controller_dropin(max_depth: float = 40.0, step: float = 2.0) -> dict:
-    """Interference (mm³) vs how far above seated the controller is, plus board clearance."""
-    holder = _holder()
-    place = _place()
-    dev = to_manifold(place * _canonical())  # real-size (un-enlarged) controller, seated
-    axis = np.array(_insertion_dir(place))  # +controller axis (out of the pocket)
+def _info(which: str) -> dict[str, Any]:
+    if which == "index":
+        from . import index_controller as m
 
+        return {
+            "dock": m.dock(),
+            "device": m.seated_device(),
+            "mate": m._place(),
+            "slot": m.CABLE_SLOT_DIR,
+            "cols": m.PEG_COLS,
+            "mesh_device": True,  # the controller welds into a manifold
+        }
+    from . import tundra_tracker as m
+
+    return {
+        "dock": m.dock(),
+        "device": m.seated_device(),
+        "mate": m._place(),
+        "slot": (0.0, 1.0),
+        "cols": (0.0,),
+        "mesh_device": False,  # the tracker STEP won't weld; use point containment
+    }
+
+
+def dropin(which: str, max_h: float = 28.0, step: float = 2.0) -> list[tuple[float, float]]:
+    info = _info(which)
+    dock_m = to_manifold(info["dock"])
+    axis = np.array([0.0, 0.0, 1.0])  # lift straight up
     rows = []
-    for t in np.arange(0.0, max_depth + 1e-6, step):
-        moved = dev.translate(tuple(axis * float(t)))
-        rows.append((float(t), float((holder ^ moved).volume())))
-    return {
-        "interference": rows,  # (height_above_seated_mm, overlap_mm3)
-        "seated_interference": rows[0][1],
-        "board_clearance": float(seated_device().bounding_box().min.Y),
-    }
-
-
-def cable_access(max_reach: float = 30.0, step: float = 1.0) -> dict:
-    """March the port point outward along the clamp slot; report where it leaves the dock.
-
-    If the slot breaches to a face, the ray exits solid material a little past the clamp
-    wall (≈ its outer radius) and stays out — so the cable can snap in. If dock material
-    walls the slot, the ray stays inside well beyond the clamp.
-    """
-    holder_tm = manifold_to_trimesh(_holder())
-    loc = _place() * _port_loc()
-    origin = apply_location(loc, np.array([[0.0, 0.0, 0.0]]))[0]
-    sdir = apply_location(loc, np.array([[0.0, 1.0, 0.0]]))[0] - origin  # +Y local = slot dir
-    sdir = sdir / np.linalg.norm(sdir)
-
-    rs = np.arange(0.0, max_reach + 1e-6, step)
-    pts = origin[None, :] + sdir[None, :] * rs[:, None]
-    inside = holder_tm.contains(pts)
-    # first reach beyond which the ray is outside for good (slot vented to air)
-    exits = next((float(r) for r, ins in zip(rs, inside, strict=False) if not ins and r > 0), None)
-    return {
-        "clamp_outer_radius": clamp_outer_dia() / 2,
-        "exits_solid_at": exits,  # mm from the port along the slot; None = never exits
-        "profile": list(zip(rs.tolist(), inside.tolist(), strict=False)),
-    }
-
-
-def report(_which: str = "index") -> None:
-    d = controller_dropin()
-    print("Controller drop-in (height above seated -> interference):")
-    for t, v in d["interference"]:
-        bar = "#" * int(min(v, 2000) / 40)
-        print(f"  {t:5.1f} mm  {v:9.1f} mm^3  {bar}")
-    seated = d["seated_interference"]
-    # The drop-in verdict is about *undercuts* — material that blocks the descent partway,
-    # which shows as interference well above the seated point. Snug seated contact (and
-    # sub-millimetre mesh-tessellation overlap) is expected and fine, so judge the path,
-    # not the seated value.
-    path = [v for t, v in d["interference"] if t >= 4.0]
-    path_max = max(path) if path else 0.0
-    print(
-        f"drop-in path max interference (>=4mm above seated) = {path_max:.1f} mm^3  ->  "
-        f"{'no undercut, drops in' if path_max < 100 else 'UNDERCUT blocks descent'}"
-    )
-    print(f"seated contact interference = {seated:.1f} mm^3 (snug/mesh-noise; not a bind)")
-    print(
-        f"board clearance (seated min Y) = {d['board_clearance']:.2f} mm  "
-        f"->  {'clears' if d['board_clearance'] > 0 else 'HITS BOARD'}"
-    )
-
-    c = cable_access()
-    print("\nCable side press-in along the clamp slot:")
-    print(f"  clamp outer radius = {c['clamp_outer_radius']:.2f} mm")
-    if c["exits_solid_at"] is None:
-        print("  ray never leaves dock material -> slot is WALLED OFF (cable can't snap in)")
+    if info["mesh_device"]:
+        dev_m = to_manifold(info["device"])
+        for t in np.arange(0.0, max_h + 1e-6, step):
+            rows.append((float(t), float((dock_m ^ dev_m.translate(tuple(axis * t))).volume())))
     else:
-        ok = c["exits_solid_at"] <= c["clamp_outer_radius"] + 2.0
-        verdict = "slot vents to air (press-in OK)" if ok else "blocked: material past the clamp"
-        print(f"  ray exits dock material at {c['exits_solid_at']:.1f} mm  ->  {verdict}")
+        tm = manifold_to_trimesh(dock_m)
+        cloud = ocp_cloud(info["device"].wrapped, 0.3)
+        for t in np.arange(0.0, max_h + 1e-6, step):
+            rows.append((float(t), float(tm.contains(cloud + axis[None, :] * t).sum())))
+    return rows
+
+
+def cable_fit(which: str) -> float:
+    """Interference (mm³) of the dropped-in magnetic connector against the dock."""
+    info = _info(which)
+    dock_m = to_manifold(info["dock"])
+    cab = to_manifold(info["mate"] * cable_assembly(barrel_len=20.0, cable_len=12.0))
+    return float((dock_m ^ cab).volume())
+
+
+def slot_vent(which: str, max_reach: float = 45.0) -> dict[float, int]:
+    """Rays from the socket axis out along the slot at several depths; 0 = vents."""
+    info = _info(which)
+    tm = manifold_to_trimesh(to_manifold(info["dock"]))
+    mate, sd = info["mate"], info["slot"]
+    out = {}
+    for z in (-1.0, -CONNECTOR.magnet_depth + 1.0, -CONNECTOR.socket_depth + 1.0):
+        o = apply_location(mate, np.array([[0.0, 0.0, z]]))[0]
+        d = apply_location(mate, np.array([[sd[0], sd[1], z]]))[0] - o
+        d /= np.linalg.norm(d)
+        rs = np.arange(1.0, max_reach, 1.0)  # skip 0 (axis sits on the bore boundary)
+        out[z] = int(tm.contains(o[None, :] + d[None, :] * rs[:, None]).sum())
+    return out
+
+
+def socket_walls(which: str) -> tuple[int, int]:
+    info = _info(which)
+    tm = manifold_to_trimesh(to_manifold(info["dock"]))
+    mate, sd = info["mate"], info["slot"]
+    az = np.radians(np.arange(0, 360, 20))
+    slot_az = np.degrees(np.arctan2(sd[1], sd[0]))
+    keep = np.abs(((np.degrees(az) - slot_az + 180) % 360) - 180) > 45  # off the slot
+    r = CONNECTOR.magnet_bore / 2 + CONNECTOR.socket_wall / 2
+    probes = []
+    for z in (-2.0, -CONNECTOR.magnet_depth + 1.0):
+        ring = np.column_stack([r * np.cos(az[keep]), r * np.sin(az[keep]), np.full(keep.sum(), z)])
+        probes.append(apply_location(mate, ring))
+    pts = np.vstack(probes)
+    return int(tm.contains(pts).sum()), len(pts)
+
+
+def peg_seats(which: str) -> tuple[int, int]:
+    from .pegboard import GLUE_RELIEF, stub_len
+
+    info = _info(which)
+    tm = manifold_to_trimesh(to_manifold(info["dock"]))
+    pb = PEGBOARD
+    az = np.radians(np.arange(0, 360, 45))
+    pts = []
+    for cx in info["cols"]:
+        for zc, dia in ((0.0, pb.peg_dia), (-pb.pitch, pb.lower_peg_dia)):
+            r = (dia + pb.peg_glue_clearance) / 2 + 1.0
+            for y in (1.5, 3.0):
+                pts.append(
+                    np.column_stack([cx + r * np.cos(az), np.full(len(az), y), zc + r * np.sin(az)])
+                )
+            pts.append(np.array([[cx, stub_len() + GLUE_RELIEF + 0.5, zc]]))  # blind floor
+    p = np.vstack(pts)
+    return int(tm.contains(p).sum()), len(p)
+
+
+def report(which: str = "index") -> None:
+    rows = dropin(which)
+    unit = "mm^3" if _info(which)["mesh_device"] else "pts"
+    print(f"{which} drop-in (height above seated -> interference, {unit}):")
+    for t, v in rows:
+        print(f"  {t:5.1f} mm  {v:9.1f}  " + "#" * int(min(v, 2000) / 40))
+    path = [v for t, v in rows if t >= 4.0]
+    limit = 100.0 if unit == "mm^3" else 5
+    print(
+        f"  path max (>=4 mm) = {max(path) if path else 0:.1f} {unit}  ->  "
+        + ("no undercut, drops in" if (max(path) if path else 0) < limit else "UNDERCUT")
+    )
+
+    info = _info(which)
+    clear = info["device"].bounding_box().min.Y
+    print(
+        f"board clearance (seated min Y) = {clear:.2f} mm  ->  {'clears' if clear > 0 else 'HITS'}"
+    )
+
+    cf = cable_fit(which)
+    verdict = "magnet+barrel fit" if cf < 30 else "BORE TOO TIGHT/SHALLOW"
+    print(f"cable fit interference = {cf:.1f} mm^3  ->  {verdict}")
+
+    sv = slot_vent(which)
+    ok = all(n == 0 for n in sv.values())
+    print(f"cable slot vent (solid hits per depth) = {sv}  ->  {'vents' if ok else 'WALLED OFF'}")
+
+    sw, swt = socket_walls(which)
+    print(f"socket walls: {sw}/{swt} in solid  ->  {'intact' if sw == swt else 'THIN/MISSING'}")
+
+    ps, pst = peg_seats(which)
+    print(f"peg glue seats: {ps}/{pst} in solid  ->  {'intact' if ps == pst else 'PLATE CARVED'}")
 
 
 if __name__ == "__main__":

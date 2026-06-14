@@ -35,11 +35,25 @@ class Pegboard:
     hook_angle: float = 45.0  # prong angle above horizontal (45 = support-free)
     catch_rise: float = 8.0  # how far the prong rises (+Z) behind the board to lock
     hook_bend_radius: float = 2.5  # radius of the swept bend joining the straight run to the rise
-    lower_peg_extra: float = 1.0  # how far the anti-rotation peg pokes past the board
+    # The lower peg is the anti-twist feature: long enough that the part flexing
+    # can't walk it out of its hole, and snugger than the hook peg (the hook stays
+    # loose for easy insertion; yaw slop comes from the lower peg's clearance).
+    lower_peg_extra: float = 5.0  # how far the anti-rotation peg pokes past the board
+    lower_peg_clearance: float = 0.4  # snugger diametral fit than the hook peg
+
+    # The pegs print as separate parts lying on their side (best layer orientation
+    # for the bent hook) and glue into D-profile holes through the dock bodies, so
+    # the bodies are free to print in whatever orientation suits their sockets.
+    peg_glue_clearance: float = 0.25  # diametral gap stub-to-hole for the glue film
+    peg_key_flat: float = 1.2  # depth of the D-flat that clocks the hook's tang upward
 
     @property
     def peg_dia(self) -> float:
         return self.hole_dia - self.peg_clearance
+
+    @property
+    def lower_peg_dia(self) -> float:
+        return self.hole_dia - self.lower_peg_clearance
 
     @property
     def straight_peg_len(self) -> float:
@@ -55,80 +69,87 @@ class Pegboard:
 class Backplate:
     """Flat plate that bears on the board front; cradles fuse to its +Y face."""
 
-    # keep as thin as the pegs themselves so the plate can print
-    # on its side without supports
-    width: float = 7.0
+    # The pegs glue in as separate parts now, so the plate no longer has to print
+    # on its side under the ~7 mm max-feature limit — wide enough to bear on the
+    # board and resist left/right twist.
+    width: float = 16.0
     thickness: float = 5.0  # +Y depth, front of the board
     margin: float = 7.0  # plate extends this far above the top hole / below lower peg
 
 
 @dataclass(frozen=True)
 class Connector:
-    """The aftermarket round magnetic USB-C cable (measured).
+    """The aftermarket round magnetic USB-C cable (measured 2026-06-13).
 
-    Female plate stays in the device's port; the male end (cable side) press-fits
-    into the print and presents its contact face upward toward the seated port.
+    The charging interface is **two magnetic discs**: a USB-C adapter that stays
+    plugged in the device's port + the cable's magnetic head. Mated, they stack to
+    ``magnet_dia`` × ``magnet_depth`` and sit in a bore **below the device's port
+    face** (the cup floor). Below the discs a rigid swivel barrel (``shroud_dia``,
+    ~20 mm long) runs to the flexible ``cable_od`` cable.
+
+    The device-side adapter protrudes ``device_plate_depth`` below the port face,
+    so when the device is seated on the cup it pokes into the bore and the cable
+    head lifts to meet it. The bore is sunk ``magnet_bore_depth`` (deeper than the
+    mated stack) so the cable head can rest **recessed** below the seat when the
+    device is off, then the magnet lifts it to couple while the cup still carries
+    the body — instead of the body balancing on top of the cable.
+
+    The dock does **not** encapsulate the whole barrel — it captures the magnet
+    stack (so the swivel can't pivot the device over) plus a short lead-in of the
+    barrel, and lets the rest of the barrel + cable hang free below the socket. A
+    side slot lets the cable route out.
     """
 
-    female_plate_dia: float = 8.0  # measured
-    female_protrude: float = 3.5  # measured — sticks out past the USB-C shell
-    male_body_od: float = 8.0  # CONFIRM/tune — swivel body OD (press-fit target)
-    male_body_len: float = 10.0  # measured — ~1 cm rigid swivel body
-    cable_od: float = 3.0  # measured
+    magnet_dia: float = 8.0  # measured — OD of the mated magnetic discs
+    magnet_depth: float = 7.5  # measured — stacked height of both discs (mated)
+    # The full-Ø magnet bore runs this deep before stepping down to the shroud bore.
+    # Deeper than ``magnet_depth`` on purpose: the extra is recess/lift travel so the
+    # cable head sits recessed when the device is off and the magnet lifts it to mate.
+    magnet_bore_depth: float = 10.0
+    device_plate_depth: float = 4.5  # measured — how far the device's magnetic adapter
+    #                                  protrudes below the USB-C port face (into the bore)
+    shroud_dia: float = 6.6  # measured — rigid swivel barrel / yoke OD
+    shroud_bore_depth: float = 3.0  # how much of the barrel the socket grips (lead-in only)
+    cable_od: float = 3.0  # measured — flexible cable below the barrel
 
-    press_fit_interference: float = 0.2  # bore = body_od - this (diametral grip)
-    cable_clearance: float = 0.6  # channel = cable_od + this
-    plate_recess_clearance: float = 0.8  # lead-in recess around the female plate
-    wall: float = 4.0  # material around the bore
-    # You can't thread the cable through a closed bore (the USB plug end won't fit),
-    # so the whole male end presses in **sideways** through a lateral slot shaped
-    # like the cable's silhouette: wide for the swivel head, narrow for the cable.
-    # Each width is a touch under the real part so it snaps past the slot lips and
-    # is then captured by the round bore/channel behind them.
-    head_slot_interference: float = 0.8  # head slot = body_bore_dia - this (snap-in lips)
-    cable_slot_width: float = 2.4  # narrow neck the 3 mm cable snaps through
-    # The clamp grips the thin 3 mm cable (not the 8 mm body), so it stays small
-    # enough to print on its side within the peg/plate max feature (~7 mm). The
-    # rigid body rests its shoulder on top of the clamp and floats up to the port;
-    # the magnet does the centring. clamp_wall is sized so cable_hole_dia + 2*wall
-    # stays under that width.
-    clamp_wall: float = 1.6  # wall around the cable bore (cable_hole_dia + 2*this ≤ ~7 mm)
-    clamp_len: float = 9.0  # how long the tube grips the cable
+    magnet_clearance: float = 0.4  # diametral slip fit for the magnet stack
+    shroud_clearance: float = 0.4  # diametral slip fit for the barrel lead-in
+    cable_slot_width: float = 3.4  # side slot the cable routes through (cable_od + slop)
+    socket_wall: float = 2.0  # min material around any part of the socket bores
 
     @property
-    def body_bore_dia(self) -> float:
-        return self.male_body_od - self.press_fit_interference
+    def magnet_bore(self) -> float:
+        return self.magnet_dia + self.magnet_clearance
 
     @property
-    def head_slot_width(self) -> float:
-        """Lateral entry width for the swivel head (under the bore so it snaps in)."""
-        return self.body_bore_dia - self.head_slot_interference
+    def shroud_bore(self) -> float:
+        return self.shroud_dia + self.shroud_clearance
 
     @property
-    def cable_hole_dia(self) -> float:
-        return self.cable_od + self.cable_clearance
-
-    @property
-    def plate_recess_dia(self) -> float:
-        return self.female_plate_dia + self.plate_recess_clearance
+    def socket_depth(self) -> float:
+        """Cutter depth below the seat (magnet bore + barrel lead-in bore)."""
+        return self.magnet_bore_depth + self.shroud_bore_depth
 
 
 @dataclass(frozen=True)
 class Tundra:
     """Tundra tracker dock knobs.
 
-    The magnetic cable alone is strong enough to hold a whole tracker (tested), so
-    this dock has **no cradle** — just the peg-back and the magnetic connector,
-    angled outward so the hanging tracker clears the board. The tracker registers
-    on the magnet, port-down, dome toward the board, strap plate facing the room.
+    The magnetic cable carries the tracker's weight, but the swivel tip pivots, so
+    the dock both **captures the rigid swivel body** (see ``Connector``) and wraps
+    the tracker's bottom in a **shallow silhouette cup** so it can't tip. The
+    tracker hangs port-down, dome toward the board, strap plate to the room,
+    angled outward so it clears the board face.
     """
 
     mount_angle: float | None = None  # outward cable tilt (deg); None = auto-solve
     board_clearance: float = 5.0  # min gap the hanging tracker keeps off the board face
-    # The clamp grips the cable a body-length below the port and, leaned, ends up
-    # nearer the board than the port; this standoff is tuned so the clamp body still
-    # stands ~5 mm off the board face, leaving room for the dome.
+    # The socket block sits between the port and the board; this standoff keeps the
+    # block (and the dome hanging toward the board) ~5 mm off the board face.
     standoff: float = 9.0  # how far the port stands off the plate face (+Y)
+    cup_depth: float = 10.0  # how far the cup walls rise around the tracker's bottom
+    cup_clearance: float = 0.6  # radial gap tracker-to-cup (drop-in slide)
+    cup_wall: float = 2.5  # cup wall thickness around the silhouette pocket
 
 
 @dataclass(frozen=True)

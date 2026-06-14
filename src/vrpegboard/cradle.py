@@ -1,37 +1,25 @@
-"""Generic cradle helpers shared by the device docks.
+"""Generic dock-geometry helpers shared by the device modules.
 
-Strategy: pose the imported device so its charging port faces **down** (-Z), then
-build a *band collar* — a block spanning a vertical slice of the device from which
-the (slightly enlarged) device solid is subtracted. The result wraps the device's
-exact contour at that band with print clearance, automatically catching any flare
-(e.g. the Index handle pommel) so it bears weight. A front opening lets the device
-push in. The connector pocket is placed at the port so it mates as the device
-seats.
+Strategy: pose the imported device so its charging port faces **down** (-Z),
+project the relevant band of its surface along the insertion axis into a 2-D
+**silhouette** outline (shapely), and extrude that into drop-in pockets/cups.
+Lean solves (the outward tilt vs the standoff off the board) work on tessellated
+point clouds of the posed device.
 
 Posing (rotation + where the port sits) is device-specific and lives in the
-device modules; those values are confirmed visually via ``preview``.
+device modules; those values are confirmed visually via ``preview``/``fitcheck``.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 import numpy as np
-from build123d import Box, Location, Part, Pos, Rot, import_step
+from build123d import Box, Location, Part, Pos, Rot
 from OCP.BRep import BRep_Tool
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
-
-from .params import PRINT
-
-
-@lru_cache(maxsize=8)
-def _load(path: str) -> Part:
-    """Import a STEP file (cached — imports are slow)."""
-    return import_step(path)
 
 
 def ocp_cloud(shape, deflection: float = 0.6) -> np.ndarray:
@@ -55,15 +43,6 @@ def ocp_cloud(shape, deflection: float = 0.6) -> np.ndarray:
                 pts.append((p.X(), p.Y(), p.Z()))
         exp.Next()
     return np.array(pts)
-
-
-def posed(path: str, rot: tuple[float, float, float], port_drop: float = 0.0) -> Part:
-    """Return the device rotated by ``rot`` (deg, X/Y/Z) and dropped so its lowest
-    point sits at Z = ``port_drop``. Use this so the port end rests at a known Z.
-    """
-    dev = Rot(*rot) * _load(path)
-    bb = dev.bounding_box()
-    return Pos(0, 0, port_drop - bb.min.Z) * dev
 
 
 def apply_location(loc: Location, pts: np.ndarray) -> np.ndarray:
@@ -123,6 +102,136 @@ def lean_angle(
     return max_angle
 
 
+def lean_standoff(
+    pts: np.ndarray,
+    pivot: tuple[float, float, float],
+    angle_deg: float,
+    board_clear: float = 2.0,
+) -> float:
+    """Board-Y the pivot (port) must stand at so the device, leaned ``angle_deg``
+    out about the pivot, keeps every point at least ``board_clear`` off the board.
+
+    The inverse of ``lean_angle``: there the standoff is fixed and the lean is
+    solved; here the lean is a chosen, intentional-looking angle and the standoff
+    absorbs the clearance. Closed form — the leaned cloud's most-negative relative
+    Y sets it directly.
+    """
+    p = pts - np.asarray(pivot, dtype=float)
+    rad = np.radians(angle_deg)  # lean +Y: Y' = y*cos + z*sin (top z>0 -> +Y)
+    y_rel = p[:, 1] * np.cos(rad) + p[:, 2] * np.sin(rad)
+    return board_clear - float(y_rel.min())
+
+
+def lean_rest_angle(
+    pts: np.ndarray,
+    pivot: tuple[float, float, float],
+    port_board_y: float,
+    board_clear: float = 0.5,
+    min_angle: float = -30.0,
+    step: float = 0.25,
+) -> float:
+    """Most negative (toward-board) lean that keeps ``board_clear`` off the board.
+
+    The opposite intent of ``lean_angle``: instead of tipping *out* until the
+    device clears, tip it *back* until it almost touches — the device then rests
+    against the board surface, which steadies it, instead of hanging angled out
+    into the room. Returns 0.0 if even vertical doesn't clear (raise the standoff).
+    """
+    p = pts - np.asarray(pivot, dtype=float)
+    a, best = 0.0, 0.0
+    while a >= min_angle:
+        rad = np.radians(a)
+        y_rel = p[:, 1] * np.cos(rad) + p[:, 2] * np.sin(rad)
+        if float(y_rel.min()) + port_board_y < board_clear:
+            break
+        best = a
+        a -= step
+    return round(best, 2)
+
+
+def tapered_base(outline, z_top: float, z_bot: float, center_xy, r_min: float) -> Part:
+    """A loft from ``outline`` (at ``z_top``) down to a scaled copy at ``z_bot``.
+
+    The body below a dock's pocket floor only has to carry the connector socket,
+    so instead of extruding the full silhouette straight down, taper it toward
+    the socket: scale the outline about ``center_xy`` (the socket's bottom axis)
+    just enough that the bottom still wraps ``r_min`` of material around the
+    socket and the walls stay ≤45° from vertical (so the upright print needs no
+    support). Scaling the *same* ring gives the loft a clean 1:1 vertex
+    correspondence — a smooth ruled surface, no twist.
+    """
+    import shapely
+    from build123d import loft
+    from shapely import affinity
+
+    cx, cy = float(center_xy[0]), float(center_xy[1])
+    coords = np.asarray(outline.exterior.coords)
+    d = np.hypot(coords[:, 0] - cx, coords[:, 1] - cy)
+    d_min = outline.exterior.distance(shapely.Point(cx, cy))
+    h = z_top - z_bot
+    s = max(r_min / max(d_min, 1e-6), 1.0 - h / float(d.max()))
+    if s >= 1.0:  # no room to taper; plain prism
+        from build123d import extrude
+
+        return extrude(poly_face(outline, z_bot), amount=h, dir=(0, 0, 1))
+    bottom = affinity.scale(outline, xfact=s, yfact=s, origin=(cx, cy))
+    return loft([poly_face(bottom, z_bot), poly_face(outline, z_top)], ruled=True)
+
+
+def silhouette(
+    xy: np.ndarray, closing: float = 4.0, relief: float = 0.8, simplify_tol: float = 0.25
+):
+    """Outer outline (shapely Polygon/MultiPolygon) of an Nx2 surface-point set.
+
+    The points are a device's tessellation nodes within a Z band, projected along
+    the insertion axis; the returned outline is the cross-section a straight
+    drop-in pocket must clear. The nodes lie on *surfaces*, so the projection is
+    an annulus-ish shell with sparse stretches (no interior fill) — a concave
+    hull snakes into the voids, so instead use a **morphological closing**:
+    dilate every point by ``closing`` (bridging gaps up to twice that — pick it
+    above half the largest node spacing), erode back, and fill each part's
+    interior (a void inside the outline is still occupied by the physical
+    device). The erosion is held back by ``relief``: a full erosion thins
+    one-node-wide fringes — exactly the silhouette-grazing nodes — to nothing,
+    so the boundary instead stays that margin outside every node.
+
+    ``closing`` doubles as the smoothing knob: bigger bridges more surface detail
+    (screw bosses, seams) into a calmer outline — the printed walls look
+    intentional instead of wiggly — at the cost of slightly overcovering concave
+    features narrower than twice the radius.
+    """
+    import shapely
+
+    if len(xy) > 80_000:  # cap the per-point buffering cost; don't go lower — the
+        # erosion relief only protects points actually kept, and aggressive
+        # subsampling visibly cuts the outline through sparse fringe chains
+        xy = xy[:: len(xy) // 80_000 + 1]
+    blob = shapely.MultiPoint(xy).buffer(closing).buffer(-(closing - relief))
+    parts = [shapely.Polygon(g.exterior) for g in getattr(blob, "geoms", [blob])]
+    return shapely.unary_union(parts).simplify(simplify_tol).buffer(0)
+
+
+def poly_face(poly, z: float = 0.0) -> Part:
+    """A build123d planar face (at height ``z``) from a shapely Polygon's exterior."""
+    from build123d import Face, Vector, Wire
+
+    pts = [Vector(x, y, z) for x, y in poly.exterior.coords[:-1]]
+    return Face(Wire.make_polygon(pts, close=True))
+
+
+def above_plane(point: tuple[float, float, float], normal: tuple[float, float, float]) -> Part:
+    """A big half-space stand-in (500 mm box) covering the +normal side of a plane.
+
+    Subtract it to cut a solid flush along an arbitrary plane (e.g. the pocket rim
+    plane perpendicular to the leaned insertion axis).
+    """
+    from build123d import Plane
+
+    size = 500.0
+    pl = Plane(origin=point, z_dir=normal)
+    return pl * Pos(0, 0, size / 2) * Box(size, size, size)
+
+
 def grip_center(xy: np.ndarray) -> tuple[float, float, float]:
     """Robust centre + radius of the dominant central cluster in an XY point set.
 
@@ -138,48 +247,3 @@ def grip_center(xy: np.ndarray) -> tuple[float, float, float]:
         c = xy[keep].mean(axis=0)
     r = float(np.linalg.norm(xy[keep] - c, axis=1).max())
     return float(c[0]), float(c[1]), r
-
-
-def band_center(part: Part, z_lo: float, z_hi: float) -> tuple[float, float, float]:
-    """Robust XY centre and radius of the device's grip within a Z band."""
-    pts = ocp_cloud(part.wrapped)
-    sel = pts[(pts[:, 2] >= z_lo) & (pts[:, 2] <= z_hi)]
-    if len(sel) < 3:
-        bb = part.bounding_box()
-        return (bb.center().X, bb.center().Y, max(bb.size.X, bb.size.Y) / 2)
-    return grip_center(sel[:, :2])
-
-
-def band_collar(
-    device: Part,
-    z_lo: float,
-    z_hi: float,
-    *,
-    clearance: float | None = None,
-    wall: float = 5.0,
-    front_opening: float = 0.0,
-) -> Part:
-    """A collar wrapping ``device`` over [z_lo, z_hi].
-
-    Subtracts a slightly enlarged copy of the device (uniform scale about the band
-    centre) to leave a print-clearance gap. ``front_opening`` (mm) cuts a slot in
-    +Y so the device can be pushed in from the front.
-    """
-    clearance = PRINT.fit_clearance if clearance is None else clearance
-    cx, cy, r = band_center(device, z_lo, z_hi)
-    block_r = r + wall
-    h = z_hi - z_lo
-    block = Pos(cx, cy, (z_lo + z_hi) / 2) * Box(2 * block_r, 2 * block_r, h)
-
-    # Enlarge the device about the band-centre point so the cavity has clearance
-    # (uniform scale; the small vertical component is centred on the band).
-    factor = (r + clearance) / r if r > 0 else 1.0
-    zmid = (z_lo + z_hi) / 2
-    centred = Pos(-cx, -cy, -zmid) * device
-    enlarged = Pos(cx, cy, zmid) * centred.scale(factor)
-    collar = block - enlarged
-
-    if front_opening > 0:
-        slot = Pos(cx, cy + block_r, (z_lo + z_hi) / 2) * Box(front_opening, 2 * block_r, h + 1)
-        collar = collar - slot
-    return collar

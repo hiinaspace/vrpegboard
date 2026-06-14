@@ -2,49 +2,32 @@
 
 Run with ``uv run vrpegboard`` (or ``uv run python -m vrpegboard.build``).
 
-The *coupon* needs no vendor CAD and should be printed first to validate board
-fit, the connector press-fit, and magnetic capture. Device docks require the
-vendor STEP models (run ``fetch_models.py`` first) and are skipped if missing.
+The pegs print as separate parts (lying on their side) and glue into the keyed
+holes in each dock's back — print one ``peg_hook`` + one ``peg_lower`` per dock.
+Device docks require the vendor STEP models (run ``fetch_models.py`` first) and
+are skipped if missing. Print ``index_cup_test`` before the full Index docks: it
+is the holder block alone, for validating the controller seat / magnet mate and
+judging stability in hand.
 """
 
 from collections.abc import Callable
 from pathlib import Path
 
-from build123d import Part, Pos
+from build123d import Part
 
-from .connector import clamp_outer_dia, connector_clamp
 from .mesh import bbox_size, export_solid
-from .params import BACKPLATE, PEGBOARD
-from .pegboard import peg_back
+from .pegboard import peg_hook_part, peg_lower_part
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "out"
 VENDOR = ROOT / "vendor"
 
+Factory = Callable[[], Part]
 
-def coupon() -> Part:
-    """Peg-back + a cable clamp on its face: the cheap first test print.
-
-    Validates board fit, the clamp's press-fit/snap-in, and magnetic capture before
-    committing filament to a full dock. The clamp overlaps the plate so they fuse
-    (the real docks stand it off on an arm and lean it; here it just points up).
-    """
-    contact_y = BACKPLATE.thickness + clamp_outer_dia() / 2 - 1.0
-    contact_z = -PEGBOARD.pitch / 2
-    # Entry slot faces the room (+Y) so it's reachable on the coupon.
-    clamp = Pos(0, contact_y, contact_z) * connector_clamp(slot_dir=(0.0, 1.0))
-    return peg_back() + clamp
-
-
-# A factory returns either a build123d Part (primitive docks) or a trimesh.Trimesh
-# (the Index dock, assembled in mesh space); export_solid/bbox_size handle both.
-Factory = Callable[[], object]
-
-# Parts that never need vendor CAD.
+# Parts that never need vendor CAD. One hook + one lower peg per dock.
 BASE_PARTS: dict[str, Factory] = {
-    "coupon": coupon,
-    "pegback": peg_back,
-    "connector_clamp": connector_clamp,
+    "peg_hook": peg_hook_part,
+    "peg_lower": peg_lower_part,
 }
 
 
@@ -52,10 +35,11 @@ def _device_parts() -> dict[str, Factory]:
     """Device docks, included only when their vendor STEP is present."""
     parts: dict[str, Factory] = {}
     if (VENDOR / "index_controller.stp").exists():
-        from .index_controller import dock_left, dock_right
+        from .index_controller import cup_test, dock_left, dock_right
 
         parts["index_dock_right"] = dock_right
         parts["index_dock_left"] = dock_left
+        parts["index_cup_test"] = cup_test
     if (VENDOR / "tundra_tracker.step").exists():
         from .tundra_tracker import dock as tundra_dock
 
@@ -79,6 +63,10 @@ def main() -> None:
             print(f"  {summary_line(str(path))}")
         except Exception:  # noqa: BLE001
             pass
+    print(
+        "\nquantities of pegs: 2 hooks + 2 lower pegs per Index dock, "
+        "1 + 1 per Tundra dock\n  (2 Index → 4 hooks + 4 lowers; 3 Tundra → 3 hooks + 3 lowers)"
+    )
 
 
 if __name__ == "__main__":

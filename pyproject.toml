@@ -17,6 +17,7 @@ analyze = [
     "networkx>=3.6.1",
     "rtree>=1.4.1",
     "scipy>=1.17.1",
+    "shapely>=2.1.2",
     "trimesh>=4.12.2",
 ]
 

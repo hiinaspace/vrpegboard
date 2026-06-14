@@ -12,7 +12,8 @@ Tweak a knob (``MOUNT_ANGLE``/``STANDOFF`` in ``index_controller.py``,
 viewer updates in place, so you can eyeball the lean and the standoff against the
 grey pegboard panel — i.e. "will this look right against my wall".
 
-    dock  = blue      device = orange (semi-transparent)      board = grey
+    dock = blue (transparent)   device = orange (transparent)   board = grey
+    cable = black   device_plate (magnetic adapter) = silver
 """
 
 from __future__ import annotations
@@ -48,34 +49,67 @@ def pegboard_panel(nx: int = 5, nz: int = 7) -> Part:
     return panel - holes if holes is not None else panel
 
 
-def _scene(which: str):
+def _scene(which: str, method: str):
     if which == "tundra":
-        from vrpegboard.tundra_tracker import dock, min_clear_angle, seated_device
+        from vrpegboard.tundra_tracker import connector_preview, dock, seated_device
 
-        return dock(), seated_device(), min_clear_angle()
-    from vrpegboard.index_controller import dock_right, min_clear_angle, seated_device
+        return dock(method), seated_device(), (0.0,), connector_preview()
+    from vrpegboard.index_controller import (
+        PEG_COLS,
+        connector_preview,
+        dock_right,
+        seated_device,
+    )
 
-    return dock_right(), seated_device(), min_clear_angle()
+    return dock_right(method), seated_device(), PEG_COLS, connector_preview()
+
+
+def _showable(obj):
+    """ocp_vscode's tessellator has no trimesh support, so a Trimesh dock renders as
+    nothing. Round-trip it through an STL into a build123d shape the viewer can show."""
+    import trimesh
+
+    if not isinstance(obj, trimesh.Trimesh):
+        return obj
+    import os
+    import tempfile
+
+    from build123d import import_stl
+
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "dock.stl")
+    obj.export(p)
+    return import_stl(p)
 
 
 def main() -> None:
+    # scene.py <index|tundra> [solid|shell] — push the dock (built with the chosen
+    # conforming-cup method) + device + board to the viewer to eyeball.
     which = sys.argv[1] if len(sys.argv) > 1 else "index"
-    dock, device, angle = _scene(which)
-    print(f"{which}: auto-solve lean = {angle}°  (override to tune)")
+    method = sys.argv[2] if len(sys.argv) > 2 else "solid"
+    dock, device, cols, (cable, plate) = _scene(which, method)
+    dock = _showable(dock)
 
     try:
         from ocp_vscode import show
     except ImportError:
         sys.exit("ocp_vscode not installed — run: uv sync --extra view")
 
+    # The glued pegs shown seated in their holes (one column for the Tundra, two
+    # for the Index).
+    from vrpegboard.pegboard import placed_pegs
+
     try:
         show(
             pegboard_panel(),
             dock,
+            placed_pegs(cols),
             device,
-            names=["board", "dock", "device"],
-            colors=["#9aa0a6", "#1f77b4", "#ff7f0e"],
-            alphas=[0.45, 1.0, 0.35],
+            cable,
+            plate,
+            names=["board", "dock", "pegs", "device", "cable", "device_plate"],
+            colors=["#9aa0a6", "#1f77b4", "#2ca02c", "#ff7f0e", "#111111", "#bdc3c7"],
+            alphas=[0.45, 0.4, 1.0, 0.35, 1.0, 0.7],
         )
     except Exception as e:  # viewer not running yet
         sys.exit(f"Could not reach the viewer ({e}).\nStart it first:  uv run python -m ocp_vscode")
