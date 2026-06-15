@@ -12,7 +12,7 @@ The exact USB-C charging cables I use are [these ones on amazon](https://www.ama
 
 ### Printing
 
-Download STLs from the (TODO) github releases. Print the mounts in natural orientation with supports for the cup parts. I use really minimal lightning infill since most of the strength is in the perimeters anyway.
+Download STLs from the [github releases](https://github.com/hiinaspace/vrpegboard/releases/). Print the mounts in natural orientation with supports for the cup parts. I use really minimal lightning infill since most of the strength is in the perimeters anyway.
 
 The pegs for the pegboards are separate parts so you don't have to support them. The bottom pegs can print upright but you might want to print the top pegs on their side for better lateral strength + small brim for bed adhesion. I attached the top pegs with hot glue but just pressed in the bottom pegs (they don't carry any load really).
 
