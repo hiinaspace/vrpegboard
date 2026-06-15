@@ -1,8 +1,26 @@
-# vrpegboard (WIP)
+# VR Pegboard
 
-Q: Can Claude 4.8 Opus do CAD for me? 
+3D-printable pegboard mounts for Valve Index controllers and Tundra trackers and magnetic USB-C charging cables:
 
-A: sort of.
+| empty | mounted | sliced |
+| --- | --- | --- |
+| ![printed mounts empty](docs/printed-empty.jpg) | ![printed mounts populated](docs/printed-holding.jpg) | ![slicer screenshot](docs/prusaslicer.png)
+
+Almost entirely built with Claude 4.8 Opus writing [build123d](https://github.com/gumyr/build123d) code from text descriptions (+ a bit of Fable 5 until they shut it down).
+
+The exact USB-C charging cables I use are [these ones on amazon](https://www.amazon.com/dp/B0BNGGHMH2), but I think they're the same as the ones EOZ or other brands sell too.
+
+### Printing
+
+Download STLs from the (TODO) github releases. Print the mounts in natural orientation with supports for the cup parts. I use really minimal lightning infill since most of the strength is in the perimeters anyway.
+
+The pegs for the pegboards are separate parts so you don't have to support them. The bottom pegs can print upright but you might want to print the top pegs on their side for better lateral strength + small brim for bed adhesion. I attached the top pegs with hot glue but just pressed in the bottom pegs (they don't carry any load really).
+
+### So how well can Claude actually do CAD?
+
+It does okay. It managed to translate even my primitive vocabulary for mechanical engineering ("the cable should uh, fit into the hole"), basic caliper measurements, and reference STEP files for the index controllers and tundra trackers into pretty well-parameterized model. I didn't have to e.g. explain how pegboards work for it to handle the pegs and backplate.
+
+Its vision and world modeling are poor though. E.g. I could tell from a glance when it was physically impossible to get the cable into place without a side slot, or that you could rotate the controller to require less of a standoff. I also had to actually open freeCAD myself and mark the center and plane of the USB-C charging ports, since the vendor STEP files don't label those. There are some automated "fit tests" that attempt to make up for the model's shortcomings, but at least for the next few dozen months my fleshy eyes and hands were necessary. (Fable 5 does have better vision than 4.8 though, for the few sessions I got out of it; I think it might've been able to mark the USB-C ports itself and judge physical impossibility even where 4.8 could not).
 
 # Readme (slop) below
 
@@ -11,8 +29,6 @@ pegboard**. Each mount holds a device securely and presents a round magnetic
 USB-C cable so the device charges as it seats.
 
 Scope: 2× Valve Index controllers (L + R) and 3× Tundra trackers.
-
-Built with [build123d](https://github.com/gumyr/build123d) (Python code-CAD).
 
 ## Quick start
 
@@ -245,7 +261,7 @@ gitignored); check each source's terms before sharing derived geometry.
 ## Reference docks (for design ideas)
 
 Existing hand-built docks worth studying before tuning — open the pictures/models
-to see how they hSold the device, then translate into the band knobs above:
+to see how they hold the device, then translate into the band knobs above:
 
 **Tundra trackers** (cradle very little; the straps/USB/magnet bear the weight):
 

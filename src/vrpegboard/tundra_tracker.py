@@ -174,7 +174,7 @@ def connector_preview() -> tuple[Part, Part]:
 
 
 CUP_MAX_R = 22.0  # cup hugs the dome within this radius of the port axis
-CUP_METHOD = "solid"  # "solid" (conforming block) | "shell" (thin conforming skin)
+CUP_METHOD = "shell"  # "solid" (conforming block) | "shell" (thin conforming skin)
 
 
 @lru_cache(maxsize=1)

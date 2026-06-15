@@ -59,7 +59,7 @@ AZIMUTH = 90.0  # spin about the vertical hang axis: trigger/front faces the boa
 #                 dock reads edge-on against the wall. dock_left mirrors → ring to the
 #                 other side. (The ring still leans boardward with the trigger, which is
 #                 why the standoff comes out ~65 mm — the measured ~70 mm offset.)
-CUP_METHOD = "solid"  # "solid" (conforming block) | "shell" (thin conforming skin)
+CUP_METHOD = "shell"  # "solid" (conforming block) | "shell" (thin conforming skin)
 STANDOFF: float | None = None  # cup board-Y (None = auto-solve min board clearance)
 BOARD_CLEARANCE = 4.0  # min gap the hanging controller keeps off the board face
 CABLE_SLOT_DIR = (0.0, 1.0)  # board-frame xy the cable entry slot exits (default +Y room)
